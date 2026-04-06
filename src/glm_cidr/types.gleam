@@ -1,8 +1,5 @@
 ////  let <<ainteger, b/integer, c/integer, d/integer>> = address
 
-import gleam/string
-import gleam/list
-import gleam/int
 import glm_cidr/mask
 
 pub type InetAddress {
@@ -32,6 +29,7 @@ pub type Subnet {
   )
 }
 
+// TODO: not sure how to use bitstrings...doh
 //pub fn pretty_print(inet_address: InetAddress) -> String {
 //  case inet_address {
 //    Ipv6InetAddress(<<

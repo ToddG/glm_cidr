@@ -1,5 +1,3 @@
-import gleam/bit_array
-import gleam/string
 import gleam/io
 
 

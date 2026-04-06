@@ -64,10 +64,10 @@ pub fn contains_test(){
   should.be_false(should.be_ok(cidr.contains(subnet, "1.0.0.255")))
 }
 
-pub fn next_test(){
-  let assert Ok(subnet) = cidr.parse("10.0.0.1", 24)
+//pub fn next_test(){
+//  let assert Ok(subnet) = cidr.parse("10.0.0.1", 24)
 //  should.equal(should.be_ok(cidr.next(subnet, "10.0.0.1")), "10.0.0.2")
-}
+//}
 
 pub fn create_mask_bits_test() {
   should.be_error(create_mask_bits(0))
