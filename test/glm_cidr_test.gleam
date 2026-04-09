@@ -134,3 +134,16 @@ pub fn ipv6_error_relationship_test() {
   let subnet = should.be_ok(cidr.subnet("AAAA:CCCC::::::BBBB/64"))
   should.be_error(cidr.relationship(subnet, "i:am:a:cat!!"))
 }
+
+
+pub fn ipv4_string_test(){
+  let ipv4_address = Ipv4(10, 0, 0, 1)
+  let ipv4_str = cidr.ip_address_to_string(ipv4_address)
+  should.equal(ipv4_str, "10.0.0.1")
+}
+
+pub fn ipv6_string_test(){
+  let ipv6_address = Ipv6(0, 0, 0, 0, 0, 0, 0, 1)
+  let ipv6_str = cidr.ip_address_to_string(ipv6_address)
+  should.equal(ipv6_str, "0:0:0:0:0:0:0:1")
+}

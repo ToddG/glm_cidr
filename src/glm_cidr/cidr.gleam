@@ -203,6 +203,7 @@ const ipv4_num_component_characters = 2
 /// ```gleam
 /// subnet("10.0.0.1/24")
 /// -> Ok(IPV4 SUBNET)
+///
 /// subnet(":::::::1/128")
 /// -> Ok(IPV6 SUBNET)
 /// ```
@@ -219,16 +220,18 @@ pub fn subnet(s: String) -> Result(Subnet, ParseError) {
 /// ## Examples
 ///
 /// ```gleam
-/// relationship(subnet("10.0.0.1/24"), "10.0.0.66")
+/// let assert Ok(subnet) = subnet("10.0.0.1/24")
+///
+/// relationship(subnet, "10.0.0.66")
 /// -> Ok(AddressIsInsideSubnet(prev: 10.0.0.65, next: 10.0.0.67, subnet_metadata: { first: 10.0.0.1, last: 10.0.0.255, count: 254 } )
 ///
-/// relationship(subnet("10.0.0.1/24"), "10.0.2.1")
+/// relationship(subnet, "10.0.2.1")
 /// -> Ok(AddressIsOutsideSubnet, subnet_metadata: { first: 10.0.0.1, last: 10.0.0.255, count: 254 } )
 ///
-/// relationship(subnet("10.0.0.1/24"), ":::::::1")
+/// relationship(subnet, ":::::::1")
 /// -> Ok(UnrelatedNetworkTypes, subnet_metadata: { first: 10.0.0.1, last: 10.0.0.255, count: 254 } )
 ///
-/// relationship(subnet("10.0.0.1/24"), "i:am:a:cat")
+/// relationship(subnet, "i:am:a:cat")
 /// -> Error(ParseError(...))
 /// ```
 pub fn relationship(
@@ -258,6 +261,32 @@ pub fn relationship(
     }
   }
 }
+
+/// Convert an IP Address the same string representation that the API consumes:
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert(ipv4_address) = Ipv4(10, 0, 0, 1)
+/// ip_address_to_string(ipv4_address)
+/// -> "10.0.0.1"
+///
+/// Note: for IPV6, no smart collapsing is done.
+pub fn ip_address_to_string(address: IpAddress) -> String {
+  case address {
+    Ipv6(a:, b:, c:, d:, e:, f:, g:, h:) -> {
+      [a, b, c, d, e, f, g, h]
+      |> list.map(int.to_base16)
+      |> string.join(ipv6_component_separator)
+    }
+    Ipv4(a:, b:, c:, d:) -> {
+      [a, b, c, d]
+      |> list.map(int.to_string)
+      |> string.join(ipv4_component_separator)
+    }
+  }
+}
+
 
 // ==================================================================
 // PRIVATE FUNCTIONS
