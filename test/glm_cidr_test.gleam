@@ -7,14 +7,8 @@ pub fn main() -> Nil {
 }
 
 pub fn valid_ipv4_subnet_test() {
-  should.equal(
-    should.be_ok(cidr.subnet("192.168.1.1/32")),
-    Subnet(Ipv4(192, 168, 1, 1), NetworkMask(32)),
-  )
-  should.equal(
-    should.be_ok(cidr.subnet("10.0.0.1/24")),
-    Subnet(Ipv4(10, 0, 0, 1), NetworkMask(24)),
-  )
+  validate_subnet("192.168.1.1/32", Ipv4(192, 168, 1, 1), NetworkMask(32))
+  validate_subnet("10.0.0.1/24", Ipv4(10, 0, 0, 1), NetworkMask(24))
 }
 
 pub fn invalid_ipv4_subnet_test() {
@@ -26,22 +20,36 @@ pub fn invalid_ipv4_subnet_test() {
 }
 
 pub fn valid_ipv6_subnet_test() {
-  should.equal(
-    should.be_ok(cidr.subnet(":::::::1/128")),
-    Subnet(Ipv6(0, 0, 0, 0, 0, 0, 0, 1), NetworkMask(128)),
+  validate_subnet(
+    "0:0:0:0:0:0:0:1/128",
+    Ipv6(0, 0, 0, 0, 0, 0, 0, 1),
+    NetworkMask(128),
   )
-  should.equal(
-    should.be_ok(cidr.subnet("1:2:3:4:5:6:7:8/128")),
-    Subnet(Ipv6(1, 2, 3, 4, 5, 6, 7, 8), NetworkMask(128)),
+  validate_subnet(
+    "1:2:3:4:5:6:7:8/128",
+    Ipv6(1, 2, 3, 4, 5, 6, 7, 8),
+    NetworkMask(128),
   )
-  should.equal(
-    should.be_ok(cidr.subnet("1:2:3:4:5:6:7:8/64")),
-    Subnet(Ipv6(1, 2, 3, 4, 5, 6, 7, 8), NetworkMask(64)),
+  validate_subnet(
+    "1:2:3:4:5:6:7:8/64",
+    Ipv6(1, 2, 3, 4, 5, 6, 7, 8),
+    NetworkMask(64),
   )
-  should.equal(
-    should.be_ok(cidr.subnet("1A:2B:3C:4D:DD:FF:A1:11/64")),
-    Subnet(Ipv6(26, 43, 60, 77, 221, 255, 161, 17), NetworkMask(64)),
+  validate_subnet(
+    "1A:2B:3C:4D:DD:FF:A1:11/64",
+    Ipv6(26, 43, 60, 77, 221, 255, 161, 17),
+    NetworkMask(64),
   )
+}
+
+pub fn validate_subnet(
+  s: String,
+  address: cidr.IpAddress,
+  mask: cidr.NetworkMask,
+) -> Nil {
+  let subnet = should.be_ok(cidr.subnet(s))
+  should.equal(s, subnet |> cidr.subnet_to_string)
+  should.equal(subnet, Subnet(address, mask))
 }
 
 pub fn invalid_ipv6_subnet_test() {

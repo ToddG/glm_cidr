@@ -6,6 +6,110 @@ import gleam/order
 import gleam/result
 import gleam/string
 
+/// ------------------------------------------------------------------
+/// PUBLIC API
+/// ------------------------------------------------------------------
+/// Given a string with an internet address and network mask delimited with a slash "/", return a subnet.
+///
+/// ## Examples
+///
+/// ```gleam
+/// subnet("10.0.0.1/24")
+/// -> Ok(IPV4 SUBNET)
+///
+/// subnet(":::::::1/128")
+/// -> Ok(IPV6 SUBNET)
+/// ```
+///
+pub fn subnet(s: String) -> Result(Subnet, ParseError) {
+  case s |> string.split_once(on: network_and_mask_separator) {
+    Error(_) -> Error(SplitAddressFromMaskParseError)
+    Ok(#(a, b)) -> parse_address_and_mask_strings(a, b)
+  }
+}
+
+/// Convert a network subnet to string.
+pub fn subnet_to_string(subnet: Subnet) -> String {
+  ip_address_to_string(subnet.address)
+  <> network_and_mask_separator
+  <> subnet.netmask.count |> int.to_string
+}
+
+/// Convert an IP Address the same string representation that the API consumes:
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert(ipv4_address) = Ipv4(10, 0, 0, 1)
+/// ip_address_to_string(ipv4_address)
+/// -> "10.0.0.1"
+///
+/// Note: for IPV6, no smart collapsing is done.
+pub fn ip_address_to_string(address: IpAddress) -> String {
+  case address {
+    Ipv6(a:, b:, c:, d:, e:, f:, g:, h:) -> {
+      [a, b, c, d, e, f, g, h]
+      |> list.map(int.to_base16)
+      |> string.join(ipv6_component_separator)
+    }
+    Ipv4(a:, b:, c:, d:) -> {
+      [a, b, c, d]
+      |> list.map(int.to_string)
+      |> string.join(ipv4_component_separator)
+    }
+  }
+}
+
+/// Given a subnet and a string with an internet address, determine the relationship between the two.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(subnet) = subnet("10.0.0.1/24")
+///
+/// relationship(subnet, "10.0.0.66")
+/// -> Ok(AddressIsInsideSubnet(prev: 10.0.0.65, next: 10.0.0.67, subnet_metadata: { first: 10.0.0.1, last: 10.0.0.255, count: 254 } )
+///
+/// relationship(subnet, "10.0.2.1")
+/// -> Ok(AddressIsOutsideSubnet, subnet_metadata: { first: 10.0.0.1, last: 10.0.0.255, count: 254 } )
+///
+/// relationship(subnet, ":::::::1")
+/// -> Ok(UnrelatedNetworkTypes, subnet_metadata: { first: 10.0.0.1, last: 10.0.0.255, count: 254 } )
+///
+/// relationship(subnet, "i:am:a:cat")
+/// -> Error(ParseError(...))
+/// ```
+pub fn relationship(
+  subnet: Subnet,
+  address: String,
+) -> Result(AddressSubnetRelationship, ParseError) {
+  case
+    result.or(
+      parse_ipv4_address_string(address),
+      parse_ipv6_address_string(address),
+    )
+  {
+    Error(e) -> Error(e)
+    Ok(target_address) -> {
+      case target_address, subnet.address {
+        Ipv6(_, _, _, _, _, _, _, _), Ipv6(_, _, _, _, _, _, _, _) -> {
+          calculate_relationship(subnet, target_address)
+        }
+        Ipv4(_, _, _, _), Ipv4(_, _, _, _) -> {
+          calculate_relationship(subnet, target_address)
+        }
+        Ipv6(_, _, _, _, _, _, _, _), Ipv4(_, _, _, _) ->
+          Ok(UnrelatedNetworkTypes)
+        Ipv4(_, _, _, _), Ipv6(_, _, _, _, _, _, _, _) ->
+          Ok(UnrelatedNetworkTypes)
+      }
+    }
+  }
+}
+
+/// ------------------------------------------------------------------
+/// MODELS
+/// ------------------------------------------------------------------
 /// IP Address
 pub type IpAddress {
   /// The IPV4 representation of an IP Address (4 8 bit integers)
@@ -196,96 +300,7 @@ const ipv4_component_separator = "."
 /// IPV4 number of characters in a component
 const ipv4_num_component_characters = 2
 
-/// Given a string with an internet address and network mask delimited with a slash "/", return a subnet.
-///
-/// ## Examples
-///
-/// ```gleam
-/// subnet("10.0.0.1/24")
-/// -> Ok(IPV4 SUBNET)
-///
-/// subnet(":::::::1/128")
-/// -> Ok(IPV6 SUBNET)
-/// ```
-///
-pub fn subnet(s: String) -> Result(Subnet, ParseError) {
-  case s |> string.split_once(on: "/") {
-    Error(_) -> Error(SplitAddressFromMaskParseError)
-    Ok(#(a, b)) -> parse_address_and_mask_strings(a, b)
-  }
-}
-
-/// Given a subnet and a string with an internet address, determine the relationship between the two.
-///
-/// ## Examples
-///
-/// ```gleam
-/// let assert Ok(subnet) = subnet("10.0.0.1/24")
-///
-/// relationship(subnet, "10.0.0.66")
-/// -> Ok(AddressIsInsideSubnet(prev: 10.0.0.65, next: 10.0.0.67, subnet_metadata: { first: 10.0.0.1, last: 10.0.0.255, count: 254 } )
-///
-/// relationship(subnet, "10.0.2.1")
-/// -> Ok(AddressIsOutsideSubnet, subnet_metadata: { first: 10.0.0.1, last: 10.0.0.255, count: 254 } )
-///
-/// relationship(subnet, ":::::::1")
-/// -> Ok(UnrelatedNetworkTypes, subnet_metadata: { first: 10.0.0.1, last: 10.0.0.255, count: 254 } )
-///
-/// relationship(subnet, "i:am:a:cat")
-/// -> Error(ParseError(...))
-/// ```
-pub fn relationship(
-  subnet: Subnet,
-  address: String,
-) -> Result(AddressSubnetRelationship, ParseError) {
-  case
-    result.or(
-      parse_ipv4_address_string(address),
-      parse_ipv6_address_string(address),
-    )
-  {
-    Error(e) -> Error(e)
-    Ok(target_address) -> {
-      case target_address, subnet.address {
-        Ipv6(_, _, _, _, _, _, _, _), Ipv6(_, _, _, _, _, _, _, _) -> {
-          calculate_relationship(subnet, target_address)
-        }
-        Ipv4(_, _, _, _), Ipv4(_, _, _, _) -> {
-          calculate_relationship(subnet, target_address)
-        }
-        Ipv6(_, _, _, _, _, _, _, _), Ipv4(_, _, _, _) ->
-          Ok(UnrelatedNetworkTypes)
-        Ipv4(_, _, _, _), Ipv6(_, _, _, _, _, _, _, _) ->
-          Ok(UnrelatedNetworkTypes)
-      }
-    }
-  }
-}
-
-/// Convert an IP Address the same string representation that the API consumes:
-///
-/// ## Examples
-///
-/// ```gleam
-/// let assert(ipv4_address) = Ipv4(10, 0, 0, 1)
-/// ip_address_to_string(ipv4_address)
-/// -> "10.0.0.1"
-///
-/// Note: for IPV6, no smart collapsing is done.
-pub fn ip_address_to_string(address: IpAddress) -> String {
-  case address {
-    Ipv6(a:, b:, c:, d:, e:, f:, g:, h:) -> {
-      [a, b, c, d, e, f, g, h]
-      |> list.map(int.to_base16)
-      |> string.join(ipv6_component_separator)
-    }
-    Ipv4(a:, b:, c:, d:) -> {
-      [a, b, c, d]
-      |> list.map(int.to_string)
-      |> string.join(ipv4_component_separator)
-    }
-  }
-}
+const network_and_mask_separator = "/"
 
 // ==================================================================
 // PRIVATE FUNCTIONS
