@@ -9,7 +9,8 @@ import gleam/string
 /// ------------------------------------------------------------------
 /// PUBLIC API
 /// ------------------------------------------------------------------
-/// Given a string with an internet address and network mask delimited with a slash "/", return a subnet.
+/// Parse a string with an internet address and network mask delimited
+/// with a slash "/", return a subnet.
 ///
 /// ## Examples
 ///
@@ -21,21 +22,21 @@ import gleam/string
 /// -> Ok(IPV6 SUBNET)
 /// ```
 ///
-pub fn subnet(s: String) -> Result(Subnet, ParseError) {
+pub fn subnet_from_string(s: String) -> Result(Subnet, ParseError) {
   case s |> string.split_once(on: network_and_mask_separator) {
     Error(_) -> Error(SplitAddressFromMaskParseError)
     Ok(#(a, b)) -> parse_address_and_mask_strings(a, b)
   }
 }
 
-/// Convert a network subnet to string.
+/// Render a network subnet to a string.
 pub fn subnet_to_string(subnet: Subnet) -> String {
   ip_address_to_string(subnet.address)
   <> network_and_mask_separator
   <> subnet.netmask.count |> int.to_string
 }
 
-/// Convert an IP Address the same string representation that the API consumes:
+/// Render an IP Address to a string.
 ///
 /// ## Examples
 ///
@@ -60,50 +61,110 @@ pub fn ip_address_to_string(address: IpAddress) -> String {
   }
 }
 
-/// Given a subnet and a string with an internet address, determine the relationship between the two.
+/// Parse an ip address from a string. Return the corresponding IPV4 subnet if the parsing succeeds.
+/// If parsing an IPV4 subnet fails, then try to parse an IPV6 address and mask. Return the corresponding
+/// IPV6 subnet if the parsing succeeds. If both parsing attempts fail, then returns both ParseErrors.
 ///
-/// ## Examples
-///
-/// ```gleam
-/// let assert Ok(subnet) = subnet("10.0.0.1/24")
-///
-/// relationship(subnet, "10.0.0.66")
-/// -> Ok(AddressIsInsideSubnet(prev: 10.0.0.65, next: 10.0.0.67, subnet_metadata: { first: 10.0.0.1, last: 10.0.0.255, count: 254 } )
-///
-/// relationship(subnet, "10.0.2.1")
-/// -> Ok(AddressIsOutsideSubnet, subnet_metadata: { first: 10.0.0.1, last: 10.0.0.255, count: 254 } )
-///
-/// relationship(subnet, ":::::::1")
-/// -> Ok(UnrelatedNetworkTypes, subnet_metadata: { first: 10.0.0.1, last: 10.0.0.255, count: 254 } )
-///
-/// relationship(subnet, "i:am:a:cat")
-/// -> Error(ParseError(...))
-/// ```
-pub fn relationship(
-  subnet: Subnet,
+/// NOTE: this means that in the error case, you'll get an error for IPV4 **and for IPV6, even though you
+/// are only trying to parse one or the other. However, the parsing will fail for both, and so both errors
+/// are returned.
+pub fn ip_address_from_string(
   address: String,
-) -> Result(AddressSubnetRelationship, ParseError) {
+) -> Result(IpAddress, ParseError) {
+  result.try_recover(parse_ipv4_address_string(address), fn(ipv4_parse_error) {
+    case parse_ipv6_address_string(address) {
+      Ok(subnet) -> Ok(subnet)
+      Error(ipv6_parse_error) ->
+        Error(ParseErrors([ipv4_parse_error, ipv6_parse_error]))
+    }
+  })
+}
+
+/// Return the next address in the subnet, after the given address. Returns an
+/// error if the given address is not in the subnet, or if there are no more
+/// addresses left in the subnet. Returns the full set of addresses, so for
+/// 10.0.0.0/24, returns 10.0.0.0 through 10.0.0.255.
+pub fn next(
+  subnet: Subnet,
+  address: IpAddress,
+) -> Result(IpAddress, CidrError) {
+  case relationship(subnet, address) {
+    Error(e) -> Error(e)
+    Ok(r) ->
+      case r {
+        AddressIsInsideSubnet -> {
+          use next_address <- result.try(increment_ip_address(address))
+          case relationship(subnet, next_address) {
+            Error(e) -> Error(e)
+            Ok(r) ->
+              case r {
+                AddressIsInsideSubnet -> next_address |> Ok
+                t ->
+                  Error(UnableToFindNextAddress(
+                    subnet,
+                    next_address,
+                    t,
+                    "calculated next address is invalid",
+                  ))
+              }
+          }
+        }
+        t ->
+          Error(UnableToFindNextAddress(
+            subnet,
+            address,
+            t,
+            "passed in address is invalid",
+          ))
+      }
+  }
+}
+
+/// Return the next usable address. Differs from `usable()` in
+/// that it omits the .0 (network) and .255 (broadcast) addresses for a
+/// 10.0.0.0/24 network segment.
+pub fn next_usable(
+  subnet: Subnet,
+  address: IpAddress,
+) -> Result(IpAddress, CidrError) {
+  use subnet_metadata <- result.try(metadata(subnet))
+  use next_address <- result.try(next(subnet, address))
+
   case
-    result.or(
-      parse_ipv4_address_string(address),
-      parse_ipv6_address_string(address),
+    compare_ip_address_addresses(
+      next_address,
+      subnet_metadata.last_host,
+      subnet.netmask.count,
     )
   {
-    Error(e) -> Error(e)
-    Ok(target_address) -> {
-      case target_address, subnet.address {
-        Ipv6(_, _, _, _, _, _, _, _), Ipv6(_, _, _, _, _, _, _, _) -> {
-          calculate_relationship(subnet, target_address)
+    Ok(comparison_result) -> {
+      case comparison_result {
+        order.Lt | order.Eq -> {
+          next_address |> Ok
         }
-        Ipv4(_, _, _, _), Ipv4(_, _, _, _) -> {
-          calculate_relationship(subnet, target_address)
-        }
-        Ipv6(_, _, _, _, _, _, _, _), Ipv4(_, _, _, _) ->
-          Ok(UnrelatedNetworkTypes)
-        Ipv4(_, _, _, _), Ipv6(_, _, _, _, _, _, _, _) ->
-          Ok(UnrelatedNetworkTypes)
+        t -> Error(AddressIsOutsideUsableRange(next_address, subnet, t))
       }
     }
+    Error(e) -> Error(UnableToFindNextUsableAddress(address, subnet, e))
+  }
+}
+
+/// Given a subnet and an internet address, determine the relationship between the two.
+pub fn relationship(
+  subnet: Subnet,
+  address: IpAddress,
+) -> Result(AddressSubnetRelationship, CidrError) {
+  case address, subnet.address {
+    Ipv6(_, _, _, _, _, _, _, _), Ipv6(_, _, _, _, _, _, _, _) -> {
+      calculate_relationship(subnet, address)
+    }
+    Ipv4(_, _, _, _), Ipv4(_, _, _, _) -> {
+      calculate_relationship(subnet, address)
+    }
+    Ipv6(_, _, _, _, _, _, _, _), Ipv4(_, _, _, _) ->
+      Error(UnrelatedNetworkTypesIpv6Ipv4(subnet, address))
+    Ipv4(_, _, _, _), Ipv6(_, _, _, _, _, _, _, _) ->
+      Error(UnrelatedNetworkTypesIpv4Ipv6(subnet, address))
   }
 }
 
@@ -203,14 +264,22 @@ pub type Subnet {
 ///
 pub type SubnetMetadata {
   SubnetMetadata(
-    /// The first usable address in the subnet.
-    first: IpAddress,
-    /// The last usable address in the subnet.
-    last: IpAddress,
-    /// The count of the usable addresses in the subnet.
-    count: Int,
-    /// The subnet network
-    network: BitArray,
+    /// network address
+    network: IpAddress,
+    /// broadcast address
+    broadcast: IpAddress,
+    /// The first usable host address in the subnet. The first host is often
+    /// the `gateway` or `default router` address, with hosts using the
+    /// subsequent addresses up to and including the last usable host.
+    first_host: IpAddress,
+    /// The last usable host address in the subnet.
+    last_host: IpAddress,
+    /// The count of the usable host addresses in the subnet.
+    usable_hosts: Int,
+    /// The subnet network prefix as an int, e.g. /24.
+    prefix: Int,
+    /// The subnet network prefix as a hex string, e.g. 0xFFFFFF00
+    hex_netmask: String,
   )
 }
 
@@ -235,39 +304,28 @@ pub type ParseError {
   /// Parsing the hex string failed, max length 4 characters
   AddressComponentStringToIntParseError(s: String)
   /// Addresses must be between 0 and 2**16 for ipv6 or 0 and 2**8 for ipv4
-  AddressComponentValueTooSmallParseError(value: Int)
-  /// Addresses must be between 0 and 2**16 for ipv6 or 0 and 2**8 for ipv4
   AddressComponentValueTooLargeParseError(value: Int)
-  /// Internally inconsistent objects, should never occur
-  InternallyInconsistentSubnetIpv6SubnetWithIpv4Netmask
-  InternallyInconsistentSubnetIpv4SubnetWithIpv6Netmask
-  /// Bit Parsing Errors
-  SubnetBitSliceParseError(
-    subnet: Subnet,
-    bitarray: BitArray,
-    bitarray_length: Int,
-  )
-  TargetAddressSliceParseError(
-    subnet: Subnet,
-    bitarray: BitArray,
-    bitarray_length: Int,
-  )
+}
+
+pub type CidrError {
+  SubnetSliceError(subnet: Subnet, bitarray: BitArray, bitarray_length: Int)
+  UnrelatedNetworkTypesIpv6Ipv4(Subnet, IpAddress)
+  UnrelatedNetworkTypesIpv4Ipv6(Subnet, IpAddress)
+  IncrementIpAddressError
   MalformedBitArray
   NetworkSizeParseError(Nil)
-  NetworkAddressParseError(Nil)
-  IncrementIpAddressParseError
+  UnableToFindNextAddress(Subnet, IpAddress, AddressSubnetRelationship, String)
+  AddressSliceError(address: BitArray, count: Int)
+  AddressIsOutsideUsableRange(IpAddress, Subnet, order.Order)
+  UnableToFindNextUsableAddress(IpAddress, Subnet, CidrError)
 }
 
 /// The relationship between an IP Address, and an Subnet
 pub type AddressSubnetRelationship {
-  /// The IP Address lies inside the Subnet. At least one of the Subnet addresses resolves to the IP Address.
-  AddressIsInsideSubnet(next: IpAddress, subnet_metadata: SubnetMetadata)
-  /// The IP Address lies outside the Subnet. None of the Subnet addresses resolve to the IP Address.
-  AddressIsOutsideSubnet(subnet_metadata: SubnetMetadata)
-  /// The IP Address does not have a relationship with the Subnet because the IP Address is not the same network type as the Subnet.
-  /// If the IP Address is IPV4 and the Subnet is IPV6, they are unrelated. Likewise if the IPAddress is IPV6 and the Subnet
-  /// is IPV4, then the two are unrelated.
-  UnrelatedNetworkTypes
+  /// The IP Address lies inside the Subnet
+  AddressIsInsideSubnet
+  /// The IP Address lies outside the Subnet
+  AddressIsOutsideSubnet
 }
 
 /// IPV6 num_bits (128)
@@ -309,187 +367,137 @@ const network_and_mask_separator = "/"
 fn calculate_relationship(
   subnet: Subnet,
   target_address: IpAddress,
-) -> Result(AddressSubnetRelationship, ParseError) {
-  let subnet_metadata_result = subnet_metadata(subnet)
-  let target_address_bit_array = ip_address_to_bit_array(target_address)
-  let count = subnet.netmask.count
-  let target_address_network_bit_array_result = case target_address_bit_array {
-    <<data:bits-size(count), _:bits>> -> {
+) -> Result(AddressSubnetRelationship, CidrError) {
+  compare_ip_address_networks(
+    subnet.address,
+    target_address,
+    subnet.netmask.count,
+  )
+  |> result.try(fn(networks_compare) {
+    case networks_compare {
+      order.Lt -> Ok(AddressIsOutsideSubnet)
+      order.Gt -> Ok(AddressIsOutsideSubnet)
+      order.Eq -> Ok(AddressIsInsideSubnet)
+    }
+  })
+}
+
+fn compare_ip_address_networks(
+  a: IpAddress,
+  b: IpAddress,
+  bits: Int,
+) -> Result(order.Order, CidrError) {
+  use a_bit_array <- result.try(
+    a |> ip_address_to_bit_array |> slice_network(bits),
+  )
+  use b_bit_array <- result.try(
+    b |> ip_address_to_bit_array |> slice_network(bits),
+  )
+
+  bit_array.compare(a_bit_array, b_bit_array) |> Ok
+}
+
+fn slice_network(address: BitArray, count: Int) -> Result(BitArray, CidrError) {
+  case address {
+    <<network:bits-size(count), _address:bits>> -> network |> Ok
+    _ -> Error(AddressSliceError(address:, count:))
+  }
+}
+
+fn slice_address(address: BitArray, count: Int) -> Result(BitArray, CidrError) {
+  case address {
+    <<_network:bits-size(count), address:bits>> -> address |> Ok
+    _ -> Error(AddressSliceError(address:, count:))
+  }
+}
+
+/// returns the order of a to b
+fn compare_ip_address_addresses(
+  a: IpAddress,
+  b: IpAddress,
+  bits: Int,
+) -> Result(order.Order, CidrError) {
+  use a_bit_array <- result.try(
+    a |> ip_address_to_bit_array |> slice_address(bits),
+  )
+  use b_bit_array <- result.try(
+    b |> ip_address_to_bit_array |> slice_address(bits),
+  )
+
+  bit_array.compare(a_bit_array, b_bit_array) |> Ok
+}
+
+/// Retrieve the metadata for a given subnet.
+pub fn metadata(subnet: Subnet) -> Result(SubnetMetadata, CidrError) {
+  let address_bits = subnet.address |> ip_address_to_bit_array
+  let prefix = subnet.netmask.count
+  let network_bits_result = case address_bits {
+    <<data:bits-size(prefix), _:bits>> -> {
       Ok(data)
     }
     _ ->
-      Error(TargetAddressSliceParseError(
+      Error(SubnetSliceError(
         subnet:,
-        bitarray: target_address_bit_array,
-        bitarray_length: target_address_bit_array |> bit_array.bit_size,
+        bitarray: address_bits,
+        bitarray_length: prefix,
       ))
   }
-
-  case subnet_metadata_result, target_address_network_bit_array_result {
-    Ok(subnet_metadata), Ok(target_address_bit_array) -> {
-      let address_compare =
-        bit_array.compare(subnet_metadata.network, target_address_bit_array)
-      case address_compare {
-        order.Lt -> Ok(AddressIsOutsideSubnet(subnet_metadata:))
-        order.Gt -> Ok(AddressIsOutsideSubnet(subnet_metadata:))
-        order.Eq -> {
-          case increment_ip_address(target_address) {
-            Error(e) -> Error(e)
-            Ok(next) -> {
-              Ok(AddressIsInsideSubnet(next:, subnet_metadata:))
-            }
-          }
-        }
-      }
+  case subnet.address, network_bits_result {
+    Ipv6(_a, _b, _c, _d, _e, _f, _g, _h), Ok(network_bits) -> {
+      new_subnet_metadata(subnet, network_bits, 128)
     }
-    Error(e), _ -> Error(e)
+    Ipv4(_a, _b, _c, _d), Ok(network_bits) -> {
+      new_subnet_metadata(subnet, network_bits, 32)
+    }
     _, Error(e) -> Error(e)
   }
 }
 
-fn subnet_metadata(subnet: Subnet) -> Result(SubnetMetadata, ParseError) {
-  let subnet_address_bit_array = subnet.address |> ip_address_to_bit_array
-  let subnet_bit_array_length = subnet_address_bit_array |> bit_array.bit_size
-  let count = subnet.netmask.count
-  let network_result = case subnet_address_bit_array {
-    <<data:bits-size(count), _:bits>> -> {
-      Ok(data)
-    }
-    _ ->
-      Error(SubnetBitSliceParseError(
-        subnet:,
-        bitarray: subnet_address_bit_array,
-        bitarray_length: subnet_bit_array_length,
-      ))
-  }
-  case subnet.address {
-    Ipv6(_, _, _, _, _, _, _, _) -> {
-      // --------------------------------------------------------------
-      // ipv6
-      // --------------------------------------------------------------
-      case subnet.netmask.count, network_result {
-        128, _ -> {
-          Ok(SubnetMetadata(
-            first: subnet.address,
-            last: subnet.address,
-            count: 1,
-            network: subnet_address_bit_array,
-          ))
-        }
-        127, Ok(network) -> {
-          let first_ip_address_result =
-            bit_array.append(network, <<0:size(1)>>)
-            |> bit_array_to_ip_address
-          let last_ip_address_result =
-            bit_array.append(network, <<1:size(1)>>)
-            |> bit_array_to_ip_address
-          case first_ip_address_result, last_ip_address_result {
-            Ok(first), Ok(last) -> {
-              Ok(SubnetMetadata(first:, last:, count: 2, network:))
-            }
-            Error(e), _ -> Error(e)
-            _, Error(e) -> Error(e)
-          }
-        }
-        mask, Ok(network) -> {
-          let address_size = 128 - mask
-          let first_ip_address_result =
-            bit_array.append(
-              network,
-              bit_array.append(bit_array_pad_zero(address_size - 1), <<
-                1:size(1),
-              >>),
-            )
-            |> bit_array_to_ip_address
-          let last_ip_address_result =
-            bit_array.append(
-              network,
-              bit_array.append(bit_array_pad_one(address_size - 1), <<
-                0:size(1),
-              >>),
-            )
-            |> bit_array_to_ip_address
-          let network_size_result = calculate_network_size(address_size)
-          case
-            first_ip_address_result,
-            last_ip_address_result,
-            network_size_result
-          {
-            Ok(first), Ok(last), Ok(count) -> {
-              Ok(SubnetMetadata(first:, last:, count:, network:))
-            }
-            Error(e), _, _ -> Error(e)
-            _, Error(e), _ -> Error(e)
-            _, _, Error(e) -> Error(e)
-          }
-        }
-        _, Error(e) -> Error(e)
-      }
-    }
-    Ipv4(_, _, _, _) -> {
-      // --------------------------------------------------------------
-      // ipv6
-      // --------------------------------------------------------------
-      case subnet.netmask.count, network_result {
-        32, _ -> {
-          Ok(SubnetMetadata(
-            first: subnet.address,
-            last: subnet.address,
-            count: 1,
-            network: subnet_address_bit_array,
-          ))
-        }
-        31, Ok(network) -> {
-          let first_ip_address_result =
-            bit_array.append(network, <<0:size(1)>>)
-            |> bit_array_to_ip_address
-          let last_ip_address_result =
-            bit_array.append(network, <<1:size(1)>>)
-            |> bit_array_to_ip_address
-          case first_ip_address_result, last_ip_address_result {
-            Ok(first), Ok(last) -> {
-              Ok(SubnetMetadata(first:, last:, count: 2, network:))
-            }
-            Error(e), _ -> Error(e)
-            _, Error(e) -> Error(e)
-          }
-        }
-        mask, Ok(network) -> {
-          let address_size = 32 - mask
-          let first_ip_address_result =
-            bit_array.append(
-              network,
-              bit_array.append(bit_array_pad_zero(address_size - 1), <<
-                1:size(1),
-              >>),
-            )
-            |> bit_array_to_ip_address
-          let last_ip_address_result =
-            bit_array.append(
-              network,
-              bit_array.append(bit_array_pad_one(address_size - 1), <<
-                0:size(1),
-              >>),
-            )
-            |> bit_array_to_ip_address
-          let network_size_result = calculate_network_size(address_size)
-          case
-            first_ip_address_result,
-            last_ip_address_result,
-            network_size_result
-          {
-            Ok(first), Ok(last), Ok(count) -> {
-              Ok(SubnetMetadata(first:, last:, count:, network:))
-            }
-            Error(e), _, _ -> Error(e)
-            _, Error(e), _ -> Error(e)
-            _, _, Error(e) -> Error(e)
-          }
-        }
-        _, Error(e) -> Error(e)
-      }
-    }
-  }
+fn new_subnet_metadata(
+  subnet: Subnet,
+  network_bits: BitArray,
+  prefix_size: Int,
+) -> Result(SubnetMetadata, CidrError) {
+  let prefix = subnet.netmask.count
+  let hex_netmask = prefix |> cidr_prefix_length_to_netmask
+  let address_size = prefix_size - prefix
+
+  use network <- result.try(
+    network_bits
+    |> bit_array.append(bit_array_pad_zero(address_size))
+    |> bit_array_to_ip_address,
+  )
+  use broadcast <- result.try(
+    network_bits
+    |> bit_array.append(bit_array_pad_one(address_size))
+    |> bit_array_to_ip_address,
+  )
+  use first_host <- result.try(
+    network_bits
+    |> bit_array.append({
+      bit_array_pad_zero(address_size) |> shift_left_bits(1, 1)
+    })
+    |> bit_array_to_ip_address,
+  )
+  use last_host <- result.try(
+    network_bits
+    |> bit_array.append({
+      bit_array_pad_one(address_size) |> shift_left_bits(1, 0)
+    })
+    |> bit_array_to_ip_address,
+  )
+  use usable_hosts <- result.try(calculate_number_of_usable_hosts(address_size))
+
+  SubnetMetadata(
+    network:,
+    broadcast:,
+    first_host:,
+    last_host:,
+    usable_hosts:,
+    prefix:,
+    hex_netmask:,
+  )
+  |> Ok
 }
 
 /// Try to parse an IPV4 address and mask. Return the corresponding IPV4 subnet if the parsing succeeds.
@@ -746,7 +754,7 @@ fn ip_address_to_bit_array(address: IpAddress) -> BitArray {
   }
 }
 
-fn bit_array_to_ip_address(b: BitArray) -> Result(IpAddress, ParseError) {
+fn bit_array_to_ip_address(b: BitArray) -> Result(IpAddress, CidrError) {
   case b {
     <<
       a:int-size(16),
@@ -764,6 +772,114 @@ fn bit_array_to_ip_address(b: BitArray) -> Result(IpAddress, ParseError) {
       Ok(Ipv4(a, b, c, d))
     }
     _ -> Error(MalformedBitArray)
+  }
+}
+
+fn calculate_number_of_usable_hosts(
+  address_size: Int,
+) -> Result(Int, CidrError) {
+  case address_size {
+    0 -> 0 |> Ok
+    1 -> 2 |> Ok
+    2 -> 2 |> Ok
+    x -> {
+      x
+      |> int.to_float
+      |> int.power(2, _)
+      |> result.map_error(NetworkSizeParseError)
+      |> result.map(float.truncate)
+      |> result.map(fn(x) { x - 2 })
+    }
+  }
+}
+
+fn increment_ip_address(address: IpAddress) -> Result(IpAddress, CidrError) {
+  case address {
+    Ipv6(a:, b:, c:, d:, e:, f:, g:, h:) -> {
+      let res =
+        [a, b, c, d, e, f, g, h]
+        |> list.reverse
+        |> increment_items(1, ipv6_address_component_max_size)
+      case res {
+        Ok([a, b, c, d, e, f, g, h]) -> {
+          Ok(Ipv6(h, g, f, e, d, c, b, a))
+        }
+        Error(e) -> Error(e)
+        _ -> Error(IncrementIpAddressError)
+      }
+    }
+    Ipv4(a:, b:, c:, d:) -> {
+      let res =
+        [a, b, c, d]
+        |> list.reverse
+        |> increment_items(1, ipv4_address_component_max_size)
+      case res {
+        Ok([a, b, c, d]) -> {
+          Ok(Ipv4(a, b, c, d))
+        }
+        Error(e) -> Error(e)
+        _ -> Error(IncrementIpAddressError)
+      }
+    }
+  }
+}
+
+fn increment_items(
+  items: List(Int),
+  x: Int,
+  max_value: Int,
+) -> Result(List(Int), CidrError) {
+  do_increment_items(items, x, max_value, [])
+}
+
+fn do_increment_items(
+  items: List(Int),
+  x: Int,
+  max_value: Int,
+  accum: List(Int),
+) -> Result(List(Int), CidrError) {
+  case items {
+    [] -> accum |> Ok
+    [head, ..tail] -> {
+      let head = head + x
+      case head > max_value {
+        True -> {
+          // rollover
+          let carry = max_value - head
+          let head = 0
+          do_increment_items(tail, carry, max_value, list.append([head], accum))
+        }
+        False -> {
+          do_increment_items(tail, 0, max_value, list.append([head], accum))
+        }
+      }
+    }
+  }
+}
+
+fn shift_left(b: BitArray, val: Int) -> BitArray {
+  case b {
+    <<_start:size(1), rest:bits>> -> <<rest:bits, val:size(1)>>
+    _ -> b
+  }
+}
+
+fn shift_left_bits(b: BitArray, count: Int, val: Int) {
+  case count {
+    0 -> b
+    c if c > 0 && c <= 32 -> shift_left_bits(shift_left(b, val), c - 1, val)
+    _ -> b
+  }
+}
+
+fn cidr_prefix_length_to_netmask(prefix_length: Int) -> String {
+  case "FFFFFFFF" |> bit_array.base16_decode {
+    Ok(b) -> {
+      "0x"
+      <> shift_left_bits(b, 32 - prefix_length, 0)
+      |> bit_array.base16_encode
+    }
+    Error(_) -> "0xERROR"
   }
 }
 
@@ -787,78 +903,5 @@ fn do_bit_array_pad_one(count: Int, accum: BitArray) -> BitArray {
   case count {
     0 -> accum
     _ -> do_bit_array_pad_one(count - 1, bit_array.append(accum, <<1:size(1)>>))
-  }
-}
-
-fn calculate_network_size(address_size: Int) -> Result(Int, ParseError) {
-  address_size
-  |> int.to_float
-  |> int.power(2, _)
-  |> result.map_error(NetworkSizeParseError)
-  |> result.map(float.truncate)
-  |> result.map(fn(x) { x - 2 })
-}
-
-fn increment_ip_address(address: IpAddress) -> Result(IpAddress, ParseError) {
-  case address {
-    Ipv6(a:, b:, c:, d:, e:, f:, g:, h:) -> {
-      let res =
-        [a, b, c, d, e, f, g, h]
-        |> list.reverse
-        |> increment_items(1, ipv6_address_component_max_size)
-      case res {
-        Ok([a, b, c, d, e, f, g, h]) -> {
-          Ok(Ipv6(h, g, f, e, d, c, b, a))
-        }
-        Error(e) -> Error(e)
-        _ -> Error(IncrementIpAddressParseError)
-      }
-    }
-    Ipv4(a:, b:, c:, d:) -> {
-      let res =
-        [a, b, c, d]
-        |> list.reverse
-        |> increment_items(1, ipv4_address_component_max_size)
-      case res {
-        Ok([a, b, c, d]) -> {
-          Ok(Ipv4(a, b, c, d))
-        }
-        Error(e) -> Error(e)
-        _ -> Error(IncrementIpAddressParseError)
-      }
-    }
-  }
-}
-
-fn increment_items(
-  items: List(Int),
-  x: Int,
-  max_value: Int,
-) -> Result(List(Int), ParseError) {
-  do_increment_items(items, x, max_value, [])
-}
-
-fn do_increment_items(
-  items: List(Int),
-  x: Int,
-  max_value: Int,
-  accum: List(Int),
-) -> Result(List(Int), ParseError) {
-  case items {
-    [] -> accum |> Ok
-    [head, ..tail] -> {
-      let head = head + x
-      case head > max_value {
-        True -> {
-          // rollover
-          let carry = max_value - head
-          let head = 0
-          do_increment_items(tail, carry, max_value, list.append([head], accum))
-        }
-        False -> {
-          do_increment_items(tail, 0, max_value, list.append([head], accum))
-        }
-      }
-    }
   }
 }
