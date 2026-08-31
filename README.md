@@ -16,15 +16,8 @@ Feel free to fork and/or submit PR's for additional functionality.
 ```sh
 gleam add glm_cidr
 ```
-```gleam
-import glm_cidr as cidr
 
-pub fn main() -> Nil {
-  let subnet = cidr.subnet("10.0.0.1/24")
-  let relation = cidr.relationship(subnet, "10.0.0.66")
-  /// -> Ok(AddressIsInsideSubnet(next: 10.0.0.67, subnet_metadata: { first: 10.0.0.1, last: 10.0.0.255, count: 254 } )
-}
-```
+See tests for how to use.
 
 Further documentation can be found at <https://hexdocs.pm/glm_cidr>.
 
