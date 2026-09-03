@@ -17,3 +17,7 @@ check:
 test:
 	gleam "test"
 
+.PHONY:
+bird:
+	gleam run -m birdie
+	

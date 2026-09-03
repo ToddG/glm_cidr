@@ -1,10 +1,108 @@
+import birdie
 import gleam/result
+import gleam/string
 import gleeunit
 import gleeunit/should
 import glm_cidr/cidr.{Ipv4, Ipv6, NetworkMask, Subnet}
 
 pub fn main() -> Nil {
   gleeunit.main()
+}
+
+pub fn doc_subnet_from_string_test() {
+  cidr.subnet_from_string("10.0.0.0/24")
+  |> string.inspect
+  |> birdie.snap(title: "subnet-from-string-01")
+  cidr.subnet_from_string(":::::::/128")
+  |> string.inspect
+  |> birdie.snap(title: "subnet-from-string-02")
+}
+
+pub fn doc_subnet_to_string_test() {
+  let s1 = should.be_ok(cidr.subnet_from_string("10.0.0.0/24"))
+  let t1 = s1 |> cidr.subnet_to_string
+  should.equal(t1, "10.0.0.0/24")
+
+  let s2 = should.be_ok(cidr.subnet_from_string(":::::::/128"))
+  let t2 = s2 |> cidr.subnet_to_string
+  should.equal(t2, "0:0:0:0:0:0:0:0/128")
+}
+
+pub fn doc_ip_address_to_string_test() {
+  let a1 = cidr.Ipv4(10, 0, 0, 1)
+  should.equal(a1 |> cidr.ip_address_to_string, "10.0.0.1")
+  let a2 = cidr.Ipv6(10, 0, 0, 0, 0, 0, 0, 1)
+  should.equal(a2 |> cidr.ip_address_to_string, "A:0:0:0:0:0:0:1")
+}
+
+pub fn doc_ip_address_from_string_1_test() {
+  let a1 = should.be_ok(cidr.ip_address_from_string("10.0.0.1"))
+  a1
+  |> string.inspect
+  |> birdie.snap(title: "ipv4-address-from-string-01")
+}
+
+pub fn doc_ip_address_from_string_2_test() {
+  let a2 = should.be_ok(cidr.ip_address_from_string("0:0:0:0:0:0:0:1"))
+  a2
+  |> string.inspect
+  |> birdie.snap(title: "ipv6-address-from-string-01")
+}
+
+pub fn doc_next_ipv4_test() {
+  let s1 =
+    cidr.Subnet(address: cidr.Ipv4(10, 0, 0, 0), netmask: cidr.NetworkMask(24))
+  let a1 = cidr.Ipv4(10, 0, 0, 0)
+  let r1 = should.be_ok(cidr.next(s1, a1))
+  should.equal(r1, cidr.Ipv4(10, 0, 0, 1))
+  let a2 = cidr.Ipv4(10, 0, 0, 254)
+  let r2 = should.be_ok(cidr.next(s1, a2))
+  should.equal(r2, cidr.Ipv4(10, 0, 0, 255))
+}
+
+pub fn doc_next_usable_test() {
+  let s1 =
+    cidr.Subnet(address: cidr.Ipv4(10, 0, 0, 0), netmask: cidr.NetworkMask(24))
+  let a1 = cidr.Ipv4(10, 0, 0, 0)
+  should.equal(should.be_ok(cidr.next_usable(s1, a1)), cidr.Ipv4(10, 0, 0, 1))
+
+  let a2 = cidr.Ipv4(10, 0, 0, 254)
+  should.be_error(cidr.next_usable(s1, a2))
+}
+
+pub fn doc_relationship_test() {
+  let s1 =
+    cidr.Subnet(address: cidr.Ipv4(10, 0, 0, 0), netmask: cidr.NetworkMask(24))
+  should.equal(
+    should.be_ok(cidr.relationship(s1, cidr.Ipv4(10, 0, 0, 0))),
+    cidr.AddressIsInsideSubnet,
+  )
+  should.equal(
+    should.be_ok(cidr.relationship(s1, cidr.Ipv4(10, 0, 0, 255))),
+    cidr.AddressIsInsideSubnet,
+  )
+  should.equal(
+    should.be_ok(cidr.relationship(s1, cidr.Ipv4(11, 0, 0, 255))),
+    cidr.AddressIsOutsideSubnet,
+  )
+}
+
+pub fn doc_metadata_test() {
+  let s1 =
+    cidr.Subnet(address: cidr.Ipv4(10, 0, 0, 0), netmask: cidr.NetworkMask(24))
+  let m1 = should.be_ok(cidr.metadata(s1))
+  should.equal(
+    m1,
+    cidr.SubnetMetadata(
+      network: cidr.Ipv4(10, 0, 0, 0),
+      broadcast: cidr.Ipv4(10, 0, 0, 255),
+      first_host: cidr.Ipv4(10, 0, 0, 1),
+      last_host: cidr.Ipv4(10, 0, 0, 254),
+      usable_hosts: 254,
+      prefix: 24,
+      hex_netmask: "0xFFFFFF00",
+    ),
+  )
 }
 
 pub fn ipaddress_from_string_1_test() {
@@ -38,14 +136,14 @@ pub fn subnet_from_string_1_test() {
 
 /// no smart collapsing is done
 pub fn subnet_from_string_2_test() {
-  let s = "AAAA:CCCC::::::BBBB/64"
+  let s = "AAAA:CCCC::::::/64"
   use subnet <- result.try(cidr.subnet_from_string(s))
   let s2 = cidr.subnet_to_string(subnet)
   should.not_equal(s, s2) |> Ok
 }
 
 pub fn subnet_from_string_2a_test() {
-  let s = "AAAA:CCCC:0:0:0:0:0:BBBB/64"
+  let s = "AAAA:CCCC:0:0:0:0:0:0/64"
   use subnet <- result.try(cidr.subnet_from_string(s))
   let s2 = cidr.subnet_to_string(subnet)
   should.equal(s, s2) |> Ok
@@ -58,21 +156,21 @@ pub fn subnet_from_string_3_test() {
 
 pub fn valid_ipv4_subnet_test() {
   validate_subnet("192.168.1.1/32", Ipv4(192, 168, 1, 1), NetworkMask(32))
-  validate_subnet("10.0.0.1/24", Ipv4(10, 0, 0, 1), NetworkMask(24))
+  validate_subnet("10.0.0.0/24", Ipv4(10, 0, 0, 0), NetworkMask(24))
 }
 
 pub fn invalid_ipv4_subnet_test() {
-  should.be_error(cidr.subnet_from_string("10.0.0.1/0"))
-  should.be_error(cidr.subnet_from_string("10.0.0.1/33"))
-  should.be_error(cidr.subnet_from_string("alpha.0.0.1/33"))
-  should.be_error(cidr.subnet_from_string(".0.0.1/32"))
-  should.be_error(cidr.subnet_from_string("10.0.0.1/-32"))
+  should.be_error(cidr.subnet_from_string("10.0.0.0/0"))
+  should.be_error(cidr.subnet_from_string("10.0.0.0/33"))
+  should.be_error(cidr.subnet_from_string("alpha.0.0.0/33"))
+  should.be_error(cidr.subnet_from_string(".0.0.0/32"))
+  should.be_error(cidr.subnet_from_string("10.0.0.0/-32"))
 }
 
 pub fn valid_ipv6_subnet_test() {
   validate_subnet(
-    "0:0:0:0:0:0:0:1/128",
-    Ipv6(0, 0, 0, 0, 0, 0, 0, 1),
+    "0:0:0:0:0:0:0:0/128",
+    Ipv6(0, 0, 0, 0, 0, 0, 0, 0),
     NetworkMask(128),
   )
   validate_subnet(
@@ -81,13 +179,13 @@ pub fn valid_ipv6_subnet_test() {
     NetworkMask(128),
   )
   validate_subnet(
-    "1:2:3:4:5:6:7:8/64",
-    Ipv6(1, 2, 3, 4, 5, 6, 7, 8),
+    "1:2:3:4:0:0:0:0/64",
+    Ipv6(1, 2, 3, 4, 0, 0, 0, 0),
     NetworkMask(64),
   )
   validate_subnet(
-    "1A:2B:3C:4D:DD:FF:A1:11/64",
-    Ipv6(26, 43, 60, 77, 221, 255, 161, 17),
+    "1A:2B:3C:4D:0:0:0:0/64",
+    Ipv6(26, 43, 60, 77, 0, 0, 0, 0),
     NetworkMask(64),
   )
 }
@@ -110,7 +208,7 @@ pub fn invalid_ipv6_subnet_test() {
 }
 
 pub fn ipv4_inside_subnet_relationship_test() {
-  let subnet = should.be_ok(cidr.subnet_from_string("10.0.0.1/24"))
+  let subnet = should.be_ok(cidr.subnet_from_string("10.0.0.0/24"))
   let address = should.be_ok(cidr.ip_address_from_string("10.0.0.66"))
   should.equal(
     should.be_ok(cidr.relationship(subnet, address)),
@@ -128,7 +226,7 @@ pub fn ipv4_inside_subnet_relationship_2_test() {
 }
 
 pub fn ipv4_inside_subnet_relationship_3_test() {
-  let subnet = should.be_ok(cidr.subnet_from_string("10.0.0.255/24"))
+  let subnet = should.be_ok(cidr.subnet_from_string("10.0.0.0/24"))
   let address = should.be_ok(cidr.ip_address_from_string("10.0.0.0"))
   should.equal(
     should.be_ok(cidr.relationship(subnet, address)),
@@ -173,7 +271,7 @@ pub fn ipv4_inside_subnet_relationship_7_test() {
 }
 
 pub fn ipv4_outside_relationship_test() {
-  let subnet = should.be_ok(cidr.subnet_from_string("10.0.0.1/24"))
+  let subnet = should.be_ok(cidr.subnet_from_string("10.0.0.0/24"))
   let address = should.be_ok(cidr.ip_address_from_string("10.0.2.1"))
   should.equal(
     should.be_ok(cidr.relationship(subnet, address)),
@@ -182,13 +280,13 @@ pub fn ipv4_outside_relationship_test() {
 }
 
 pub fn ipv4_unrelated_relationship_test() {
-  let subnet = should.be_ok(cidr.subnet_from_string("10.0.0.1/24"))
+  let subnet = should.be_ok(cidr.subnet_from_string("10.0.0.0/24"))
   let address = should.be_ok(cidr.ip_address_from_string(":::::::1"))
   should.be_error(cidr.relationship(subnet, address))
 }
 
 pub fn ipv6_inside_subnet_relationship_test() {
-  let subnet = should.be_ok(cidr.subnet_from_string("AAAA:::::::BBBB/64"))
+  let subnet = should.be_ok(cidr.subnet_from_string("AAAA:::::::/64"))
   let address = should.be_ok(cidr.ip_address_from_string("AAAA:::::::CCCC"))
   should.equal(
     should.be_ok(cidr.relationship(subnet, address)),
@@ -197,7 +295,7 @@ pub fn ipv6_inside_subnet_relationship_test() {
 }
 
 pub fn ipv6_outside_relationship_test() {
-  let subnet = should.be_ok(cidr.subnet_from_string("AAAA:CCCC::::::BBBB/64"))
+  let subnet = should.be_ok(cidr.subnet_from_string("AAAA:CCCC::::::/64"))
   let address = should.be_ok(cidr.ip_address_from_string("AAAA:DDDD::::::BBBB"))
   should.equal(
     should.be_ok(cidr.relationship(subnet, address)),
@@ -206,7 +304,7 @@ pub fn ipv6_outside_relationship_test() {
 }
 
 pub fn ipv6_unrelated_relationship_test() {
-  let subnet = should.be_ok(cidr.subnet_from_string("AAAA:CCCC::::::BBBB/64"))
+  let subnet = should.be_ok(cidr.subnet_from_string("AAAA:CCCC::::::/64"))
   let address = should.be_ok(cidr.ip_address_from_string("192.168.1.1"))
   should.be_error(cidr.relationship(subnet, address))
 }
@@ -247,7 +345,7 @@ pub fn ipv4_metadata_1_test() {
 }
 
 pub fn ipv4_metadata_2_test() {
-  let subnet = should.be_ok(cidr.subnet_from_string("10.0.0.1/24"))
+  let subnet = should.be_ok(cidr.subnet_from_string("10.0.0.0/24"))
   let network = should.be_ok(cidr.ip_address_from_string("10.0.0.0"))
   let broadcast = should.be_ok(cidr.ip_address_from_string("10.0.0.255"))
   let first_host = should.be_ok(cidr.ip_address_from_string("10.0.0.1"))
@@ -319,6 +417,7 @@ pub fn ipv4_metadata_4_test() {
 }
 
 pub fn ipv4_metadata_5_test() {
+  // note this subnet starts at .64 and not at .0
   let subnet = should.be_ok(cidr.subnet_from_string("10.0.0.64/26"))
   let network = should.be_ok(cidr.ip_address_from_string("10.0.0.64"))
   let broadcast = should.be_ok(cidr.ip_address_from_string("10.0.0.127"))

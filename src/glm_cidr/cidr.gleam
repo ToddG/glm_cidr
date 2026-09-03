@@ -6,20 +6,17 @@ import gleam/order
 import gleam/result
 import gleam/string
 
-/// ------------------------------------------------------------------
-/// PUBLIC API
-/// ------------------------------------------------------------------
 /// Parse a string with an internet address and network mask delimited
 /// with a slash "/", return a subnet.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// subnet("10.0.0.1/24")
-/// -> Ok(IPV4 SUBNET)
+/// subnet_from_string("10.0.0.0/24")
+/// >> Ok(Subnet(Ipv4(10, 0, 0, 0), NetworkMask(24)))
 ///
-/// subnet(":::::::1/128")
-/// -> Ok(IPV6 SUBNET)
+/// echo subnet(":::::::0/128")
+/// >> Ok(Subnet(Ipv6(0, 0, 0, 0, 0, 0, 0, 0), NetworkMask(128)))
 /// ```
 ///
 pub fn subnet_from_string(s: String) -> Result(Subnet, ParseError) {
@@ -30,6 +27,20 @@ pub fn subnet_from_string(s: String) -> Result(Subnet, ParseError) {
 }
 
 /// Render a network subnet to a string.
+///
+/// ## Examples
+///
+/// ```gleam
+/// use s1 <- result.try(subnet_from_string("10.0.0.0/24"))
+/// s1 |> subnet_to_string
+/// -> "10.0.0.0/24"
+///
+/// // Note that this library does not smart collapse zeros
+/// // in Ipv6 addresses.
+/// use s2 <- result.try(subnet(":::::::/128"))
+/// ->"0:0:0:0:0:0:0:0/128"
+/// ```
+/// 
 pub fn subnet_to_string(subnet: Subnet) -> String {
   ip_address_to_string(subnet.address)
   <> network_and_mask_separator
@@ -41,11 +52,17 @@ pub fn subnet_to_string(subnet: Subnet) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// let assert(ipv4_address) = Ipv4(10, 0, 0, 1)
-/// ip_address_to_string(ipv4_address)
+/// let a1 = cidr.Ipv4(10, 0, 0, 1)
+/// a1 |> ip_address_to_string
 /// -> "10.0.0.1"
 ///
-/// Note: for IPV6, no smart collapsing is done.
+/// // Note that this library does not smart collapse zeros
+/// // in Ipv6 addresses.
+/// let a2 = cidr.Ipv6(10, 0, 0, 0, 0, 0, 0, 1)
+/// a2 |> ip_address_to_string
+/// -> "A:0:0:0:0:0:0:1"
+/// ```
+/// 
 pub fn ip_address_to_string(address: IpAddress) -> String {
   case address {
     Ipv6(a:, b:, c:, d:, e:, f:, g:, h:) -> {
@@ -61,13 +78,21 @@ pub fn ip_address_to_string(address: IpAddress) -> String {
   }
 }
 
-/// Parse an ip address from a string. Return the corresponding IPV4 subnet if the parsing succeeds.
-/// If parsing an IPV4 subnet fails, then try to parse an IPV6 address and mask. Return the corresponding
-/// IPV6 subnet if the parsing succeeds. If both parsing attempts fail, then returns both ParseErrors.
+/// Parse an ip address from a string.
 ///
-/// NOTE: this means that in the error case, you'll get an error for IPV4 **and for IPV6, even though you
-/// are only trying to parse one or the other. However, the parsing will fail for both, and so both errors
-/// are returned.
+/// ## Examples
+///
+/// ```gleam
+/// use a1 <- result.try(cidr.ip_address_from_string("10.0.0.1"))
+/// a1
+/// |> string.inspect
+/// -> Ipv4(10, 0, 0, 1)
+/// 
+/// use a2 <- result.try(cidr.ip_address_from_string(":::::::1"))
+/// a2
+/// |> string.inspect
+/// -> Ipv6(0, 0, 0, 0, 0, 0, 0, 1)
+/// ```
 pub fn ip_address_from_string(
   address: String,
 ) -> Result(IpAddress, ParseError) {
@@ -82,8 +107,23 @@ pub fn ip_address_from_string(
 
 /// Return the next address in the subnet, after the given address. Returns an
 /// error if the given address is not in the subnet, or if there are no more
-/// addresses left in the subnet. Returns the full set of addresses, so for
-/// 10.0.0.0/24, returns 10.0.0.0 through 10.0.0.255.
+/// addresses left in the subnet. Returns the full set of addresses, after
+/// the passed in address.
+///
+/// ## Examples:
+///
+/// ```gleam
+/// let s1 =
+///   Subnet(address: Ipv4(10, 0, 0, 0), netmask: NetworkMask(24))
+/// let a1 = Ipv4(10, 0, 0, 0)
+/// next(s1, a1)
+/// -> Ipv4(10, 0, 0, 1)
+/// 
+/// let a2 = Ipv4(10, 0, 0, 254)
+/// next(s1, a2)
+/// -> Ipv4(10, 0, 0, 255)
+/// ```
+/// 
 pub fn next(
   subnet: Subnet,
   address: IpAddress,
@@ -121,8 +161,23 @@ pub fn next(
 }
 
 /// Return the next usable address. Differs from `usable()` in
-/// that it omits the .0 (network) and .255 (broadcast) addresses for a
+/// that it omits the .255 (broadcast) address for a
 /// 10.0.0.0/24 network segment.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let s1 =
+///   Subnet(address: Ipv4(10, 0, 0, 0), netmask: NetworkMask(24))
+/// let a1 = Ipv4(10, 0, 0, 0)
+/// next_usable(s1, a1)
+/// -> Ipv4(10, 0, 0, 1)
+/// 
+/// let a2 = Ipv4(10, 0, 0, 254)
+/// next_usable(s1, a2)
+/// -> Error(AddressIsOutsideUsableRange(Ipv4(10, 0, 0, 255), Subnet(Ipv4(10, 0, 0, 0), NetworkMask(24)), Gt))
+/// ```
+/// 
 pub fn next_usable(
   subnet: Subnet,
   address: IpAddress,
@@ -150,6 +205,19 @@ pub fn next_usable(
 }
 
 /// Given a subnet and an internet address, determine the relationship between the two.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let s1 =
+///   Subnet(address: Ipv4(10, 0, 0, 0), netmask: NetworkMask(24))
+/// relationship(s1, Ipv4(10, 0, 0, 0))
+/// -> Ok(AddressIsInsideSubnet)
+/// relationship(s1, Ipv4(10, 0, 0, 255))
+/// -> Ok(AddressIsInsideSubnet)
+/// relationship(s1, Ipv4(11, 0, 0, 255))
+/// -> Ok(AddressIsOutsideSubnet)
+/// ```
 pub fn relationship(
   subnet: Subnet,
   address: IpAddress,
@@ -168,9 +236,6 @@ pub fn relationship(
   }
 }
 
-/// ------------------------------------------------------------------
-/// MODELS
-/// ------------------------------------------------------------------
 /// IP Address
 pub type IpAddress {
   /// The IPV4 representation of an IP Address (4 8 bit integers)
@@ -234,33 +299,6 @@ pub type Subnet {
 ///
 /// To keep things consistent, the behaviour of these special cases follows the same convention for both IPV4 and
 /// IPV6. Even though IPV6 does not have a broadcast address, we are treating it as if it did.
-///
-/// ## Examples
-///
-/// ```gleam
-/// metadata(subnet("10.0.0.1/32"))
-/// -> Ok(SubnetMetadata(first: 10.0.0.1, last: 10.0.0.1, count: 1)
-///
-/// metadata(subnet("10.0.0.1/31"))
-/// -> Ok(SubnetMetadata(first: 10.0.0.0, last: 10.0.0.1, count: 2)
-///
-/// metadata(subnet("10.0.0.1/30"))
-/// -> Ok(SubnetMetadata(first: 10.0.0.1, last: 10.0.0.2, count: 2)
-///
-/// metadata(subnet("10.0.0.1/24"))
-/// -> Ok(SubnetMetadata(first: 10.0.0.1, last: 10.0.0.254, count: 254)
-///
-/// metadata(subnet("FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFF/128"))
-/// -> Ok(SubnetMetadata(first: FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFF, last: FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFF, count: 1)
-///
-/// metadata(subnet("FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFF/127"))
-/// -> Ok(SubnetMetadata(first: FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFE, last: FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFF, count: 2)
-///
-/// metadata(subnet("FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFF/126"))
-/// -> Ok(SubnetMetadata(first: FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFD, last: FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFE, count: 2)
-///
-/// metadata(subnet("FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFF/112"))
-/// -> Ok(SubnetMetadata(first: FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:1, last: FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFE, count: 65534)
 ///
 pub type SubnetMetadata {
   SubnetMetadata(
@@ -428,6 +466,25 @@ fn compare_ip_address_addresses(
 }
 
 /// Retrieve the metadata for a given subnet.
+/// 
+/// ## Examples
+///
+/// ```gleam
+/// let s1 = cidr.Subnet(
+///     address: cidr.Ipv4(10, 0, 0, 0), netmask: cidr.NetworkMask(24))
+/// cidr.metadata(s1)
+/// -> SubnetMetadata(Ipv4(10, 0, 0, 0), Ipv4(10, 0, 0, 255), Ipv4(10, 0, 0, 1), Ipv4(10, 0, 0, 254), 254, 24, "0xFFFFFF00")
+///
+/// //    cidr.SubnetMetadata(
+/// //      network: cidr.Ipv4(10, 0, 0, 0),
+/// //      broadcast: cidr.Ipv4(10, 0, 0, 255),
+/// //      first_host: cidr.Ipv4(10, 0, 0, 1),
+/// //      last_host: cidr.Ipv4(10, 0, 0, 254),
+/// //      usable_hosts: 254,
+/// //      prefix: 24,
+/// //      hex_netmask: "0xFFFFFF00",
+/// //    ),
+/// ```
 pub fn metadata(subnet: Subnet) -> Result(SubnetMetadata, CidrError) {
   let address_bits = subnet.address |> ip_address_to_bit_array
   let prefix = subnet.netmask.count

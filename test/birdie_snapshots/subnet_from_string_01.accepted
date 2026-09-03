@@ -1,0 +1,7 @@
+---
+version: 2.0.2
+title: subnet-from-string-01
+file: ./test/glm_cidr_test.gleam
+test_name: doc_subnet_from_string_test
+---
+Ok(Subnet(Ipv4(10, 0, 0, 0), NetworkMask(24)))
