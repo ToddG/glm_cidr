@@ -78,6 +78,11 @@ pub fn ip_address_to_string(address: IpAddress) -> String {
   }
 }
 
+/// Render Netmask to a hex string.
+pub fn netmask_to_string(netmask: NetworkMask) -> String {
+  netmask.count |> cidr_prefix_length_to_netmask
+}
+
 /// Parse an ip address from a string.
 ///
 /// ## Examples
